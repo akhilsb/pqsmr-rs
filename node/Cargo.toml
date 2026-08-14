@@ -23,11 +23,6 @@ primary = { path = "../primary" }
 worker = { path = "../worker" }
 consensus = { path = "../consensus" }
 
-hashrand = { package = "hashrand", git = "https://github.com/akhilsb/hashrand-rs.git" }
-glowlib = {package = "glow_lib", git = "https://github.com/akhilsb/hashrand-rs.git"}
-hconfig = {package = "config", git = "https://github.com/akhilsb/hashrand-rs.git"}
-signal-hook = "0"
-
 [features]
 benchmark = ["worker/benchmark", "primary/benchmark", "consensus/benchmark"]
 

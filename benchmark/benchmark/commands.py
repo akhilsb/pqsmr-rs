@@ -36,24 +36,24 @@ class CommandMaker:
         return f'./node generate_keys --filename {filename}'
 
     @staticmethod
-    def run_primary(keys, committee, store, parameters,hashrand_conf, debug=False):
+    def run_primary(keys, committee, store, parameters, debug=False):
         assert isinstance(keys, str)
         assert isinstance(committee, str)
         assert isinstance(parameters, str)
         assert isinstance(debug, bool)
         v = '-vvv' if debug else '-vv'
         return (f'./node {v} run --keys {keys} --committee {committee} '
-                f'--store {store} --parameters {parameters} --hashrand_conf {hashrand_conf} --hashrand_batch 50 --hashrand_freq 25 primary')
+                f'--store {store} --parameters {parameters} primary')
 
     @staticmethod
-    def run_worker(keys, committee, store, parameters, id,hashrand_conf, debug=False):
+    def run_worker(keys, committee, store, parameters, id, debug=False):
         assert isinstance(keys, str)
         assert isinstance(committee, str)
         assert isinstance(parameters, str)
         assert isinstance(debug, bool)
         v = '-vvv' if debug else '-vv'
         return (f'./node {v} run --keys {keys} --committee {committee} '
-                f'--store {store} --parameters {parameters} --hashrand_conf {hashrand_conf} --hashrand_batch 100 --hashrand_freq 10 worker --id {id}')
+                f'--store {store} --parameters {parameters} worker --id {id}')
 
     @staticmethod
     def run_client(address, size, rate, nodes):
