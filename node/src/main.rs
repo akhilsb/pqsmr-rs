@@ -1,20 +1,14 @@
-use std::path::Path;
-
 // Copyright(C) Facebook, Inc. and its affiliates.
 use anyhow::{Context, Result};
 use clap::{crate_name, crate_version, App, AppSettings, ArgMatches, SubCommand};
 use config::Export as _;
 use config::Import as _;
-use config::file_to_ips;
 use config::{Committee, KeyPair, Parameters, WorkerId};
 use consensus::Consensus;
 use env_logger::Env;
-use hconfig::Node;
-use log::info;
 use primary::{Certificate, Primary};
 use store::Store;
 use tokio::sync::mpsc::{channel, Receiver};
-use tokio::sync::oneshot::Sender;
 use worker::Worker;
 
 /// The default channel capacity.
@@ -38,9 +32,6 @@ async fn main() -> Result<()> {
                 .args_from_usage("--committee=<FILE> 'The file containing committee information'")
                 .args_from_usage("--parameters=[FILE] 'The file containing the node parameters'")
                 .args_from_usage("--store=<PATH> 'The path where to create the data store'")
-                .args_from_usage("--hashrand_conf=<PATH> 'The configuration for HashRand'")
-                .args_from_usage("--hashrand_batch=<B> 'The batchsize configuration for HashRand'")
-                .args_from_usage("--hashrand_freq=<F> 'The pipeline frequency config for HashRand'")
                 .subcommand(SubCommand::with_name("primary").about("Run a single primary"))
                 .subcommand(
                     SubCommand::with_name("worker")
@@ -82,8 +73,6 @@ async fn run(matches: &ArgMatches<'_>) -> Result<()> {
     let committee_file = matches.value_of("committee").unwrap();
     let parameters_file = matches.value_of("parameters");
     let store_path = matches.value_of("store").unwrap();
-    //let hashrand_context = HashRand
-    //let config= Node::from_json()
     // Read the committee and node's keypair from file.
     let keypair = KeyPair::import(key_file).context("Failed to load the node's keypair")?;
     let committee =
@@ -107,17 +96,6 @@ async fn run(matches: &ArgMatches<'_>) -> Result<()> {
     match matches.subcommand() {
         // Spawn the primary and consensus core.
         ("primary", _) => {
-            // Configuration necessary for HashRand
-            let hashrand_config_file = matches.value_of("hashrand_conf").unwrap();
-            let hashrand_batch_size = matches.value_of("hashrand_batch").unwrap().parse::<usize>().unwrap();
-            let hashrand_frequency_pipeline = matches.value_of("hashrand_freq").unwrap().parse::<u32>().unwrap();
-            let mut hconfig = Node::from_json(String::from(hashrand_config_file.clone()));
-            if Path::new("ip_file").exists(){
-                info!("IP_FILE exists, updating HashRand configuration");
-                let ip_file = "ip_file".to_string();
-                hconfig.update_config(file_to_ips(ip_file));
-            }
-            let _exit_tx:Sender<()>;
             let (tx_new_certificates, rx_new_certificates) = channel(CHANNEL_CAPACITY);
             let (tx_feedback, rx_feedback) = channel(CHANNEL_CAPACITY);
             Primary::spawn(
@@ -135,12 +113,7 @@ async fn run(matches: &ArgMatches<'_>) -> Result<()> {
                 /* rx_primary */ rx_new_certificates,
                 /* tx_primary */ tx_feedback,
                 tx_output,
-                (hashrand_config_file,hconfig,hashrand_batch_size,hashrand_frequency_pipeline)
             );
-            
-            // exit_tx
-            // .send(())
-            // .map_err(|_| anyhow!("Server already shut down"))?;
         }
 
         // Spawn a single worker.

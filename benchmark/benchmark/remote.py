@@ -196,14 +196,6 @@ class Bench:
             )
         committee = Committee(addresses, self.settings.base_port)
         committee.print(PathMaker.committee_file())
-        ip_file = ""
-        for x in range(len(hosts)):
-            port = self.settings.hrnd_port + x
-            ip_file += hosts[x]+ ":"+ str(port) + "\n"
-        ip_file += hosts[0] + ":" + str(self.settings.client_run_port) + "\n"
-        with open("ip_file", 'w') as f:
-            f.write(ip_file)
-        f.close()
         node_parameters.print(PathMaker.parameters_file())
 
         # Cleanup all nodes and upload configuration files.
@@ -216,9 +208,7 @@ class Bench:
                 c.put(PathMaker.committee_file(), '.')
                 c.put(PathMaker.key_file(i), '.')
                 c.put(PathMaker.parameters_file(), '.')
-                c.put(PathMaker.hashrand_config_file(i),'.')
                 c.put(PathMaker.t_key_file(),'.')
-                c.put("ip_file",'.')
                 # unzip tkeys file
                 unzip_cmd = CommandMaker.unzip_tkeys('tkeys.tar.gz','thresh_keys')
                 print(unzip_cmd)
@@ -260,7 +250,6 @@ class Bench:
                 PathMaker.committee_file(),
                 PathMaker.db_path(i),
                 PathMaker.parameters_file(),
-                PathMaker.hashrand_config_file(i),
                 debug=debug
             )
             log_file = PathMaker.primary_log_file(i)
@@ -277,7 +266,6 @@ class Bench:
                     PathMaker.db_path(i, id),
                     PathMaker.parameters_file(),
                     id,  # The worker's id.
-                    PathMaker.hashrand_config_file(i),
                     debug=debug
                 )
                 log_file = PathMaker.worker_log_file(i, id)

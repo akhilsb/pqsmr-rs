@@ -2,19 +2,11 @@
 use config::{Committee, Stake};
 use crypto::Hash as _;
 use crypto::{Digest0, PublicKey};
-//use glow_lib::node::GlowLib;
-//use glow_lib::node::GlowLib;
-use hashrand::node::HashRand;
-//use hashrand::node::HashRand;
-use hnode::Node;
 use log::{debug, info, log_enabled, warn};
 use primary::{Certificate, Round};
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
-use tokio::sync::mpsc::{Receiver, Sender, channel};
-use signal_hook::consts::SIGINT;
-use signal_hook::consts::SIGTERM;
-use signal_hook::iterator::Signals;
+use tokio::sync::mpsc::{Receiver, Sender};
 
 #[cfg(test)]
 #[path = "tests/consensus_tests.rs"]
@@ -86,11 +78,6 @@ pub struct Consensus {
 
     /// The genesis certificates.
     genesis: Vec<Certificate>,
-    /// HashRand based coin construct and receive channels
-    beacon_reconstruct_queue: Sender<u32>,
-    beacon_queue: Receiver<(u32,u128)>,
-
-    beacon_map: HashMap<u32,u128>
 }
 
 impl Consensus {
@@ -100,12 +87,8 @@ impl Consensus {
         rx_primary: Receiver<Certificate>,
         tx_primary: Sender<Certificate>,
         tx_output: Sender<Certificate>,
-        (config_str,config,_batch,_frequency): (&str,Node,usize,u32)
     ) {
-        let _exit_tx;
-        let (coin_construct,coin_const_recv) = channel(10000);
-        let (coin_send, coin_recv) = channel(10000);
-        tokio::spawn(async move { 
+        tokio::spawn(async move {
             Self {
                 committee: committee.clone(),
                 gc_depth,
@@ -113,126 +96,55 @@ impl Consensus {
                 tx_primary,
                 tx_output,
                 genesis: Certificate::genesis(&committee),
-                beacon_reconstruct_queue:coin_construct,
-                beacon_queue:coin_recv,
-                beacon_map:HashMap::default(),
             }
             .run()
             .await;
         });
-        let mut arr_strsplit:Vec<&str> = config_str.split("/").collect();
-        let id_str = ((config.id +1)).to_string();
-        //let id_str_1  = ((config.id)).to_string();
-        let key_str = "sec".to_string();
-        let concat_str = key_str + &id_str;
-        let _last_elem = arr_strsplit.pop();
-
-        let mut vec_native = Vec::new();
-        for i in 1..config.num_nodes+1{
-            let pkey_str = "pub".to_string();
-            let mut tpub = arr_strsplit.clone();
-            let iter_str = pkey_str.clone()+ &(i.to_string());
-            tpub.push(iter_str.as_str());
-            vec_native.push(tpub.join("/"));
-        }
-        arr_strsplit.push(concat_str.as_str());
-        // _exit_tx = GlowLib::spawn(
-        //     config, 
-        //     arr_strsplit.join("/").as_str(),
-        //     vec_native,
-        //     coin_const_recv,
-        //     coin_send
-        // ).unwrap();
-        _exit_tx = HashRand::spawn(
-            config,
-            0, 
-            _batch, 
-            _frequency, 
-            coin_const_recv, 
-            coin_send
-        ).unwrap();
-        let mut signals = Signals::new(&[SIGINT, SIGTERM]).unwrap();
-        signals.forever().next();
-        log::error!("Received termination signal");
     }
 
     async fn run(&mut self) {
         // The consensus state (everything else is immutable).
         let mut state = State::new(self.genesis.clone());
-        debug!("Requesting HashRand beacon for round {}",0);
-        if let Err(e) = self.beacon_reconstruct_queue.send(0 as u32).await {
-            log::warn!(
-                "Failed to request a beacon for leader election of round {} because of error {}",
-                0,e
-            );
-        }
         // Listen to incoming certificates.
         loop {
-            tokio::select! {
-                cert = self.rx_primary.recv() => {
-                    match cert{
-                        Some(certificate)=>{
-                            log::error!("Processing {:?} with header {:?}", certificate,certificate.header);
-                            let round = certificate.round();
-                
-                            // Add the new certificate to the local storage.
-                            state
-                                .dag
-                                .entry(round)
-                                .or_insert_with(HashMap::new)
-                                .insert(certificate.origin(), (certificate.digest(), certificate));
-                            
-                            let r = round-1;
-                            // request leader election for beacon id r/2
-                            if r % 2 == 0 && r > 4 && !self.beacon_map.contains_key(&((r/2) as u32)){
-                                log::error!("Requesting HashRand beacon for round {}",r/2);
-                                if let Err(e) = self.beacon_reconstruct_queue.send((r/2) as u32).await {
-                                    log::warn!(
-                                        "Failed to request a beacon for leader election of round {} because of error {}",
-                                        r/2,e
-                                    );
-                                }
-                                self.beacon_map.insert((r/2) as u32,0);
-                            }
-                            else if r % 2 == 0 && r > 4 && self.beacon_map.contains_key(&((r/2) as u32)){
-                                let beacon = self.beacon_map.get(&((r/2) as u32)).unwrap();
-                                if beacon.clone() > 0{
-                                    self.beacon_output((((r/2) as u32),*beacon), &mut state).await;
-                                }
-                            }
-                        },
-                        None => {
-                            warn!("Consensus receive error received");
-                        }
+            match self.rx_primary.recv().await {
+                Some(certificate) => {
+                    log::error!("Processing {:?} with header {:?}", certificate,certificate.header);
+                    let round = certificate.round();
+
+                    // Add the new certificate to the local storage.
+                    state
+                        .dag
+                        .entry(round)
+                        .or_insert_with(HashMap::new)
+                        .insert(certificate.origin(), (certificate.digest(), certificate));
+
+                    // Try to order the dag to commit. Start from the highest round for which we
+                    // have at least 2f+1 certificates.
+                    let r = round-1;
+
+                    // We only elect leaders for even round numbers.
+                    if r % 2 != 0 || r <= 4 {
+                        continue;
                     }
+                    self.commit_round(r, &mut state).await;
                 },
-                beacon = self.beacon_queue.recv() =>{
-                    match beacon {
-                        Some(beacon_tup)=>{
-                            log::info!("Received Beacon from HashRand {:?}",beacon_tup.clone());
-                            if beacon_tup.0 > 0{
-                                self.beacon_output(beacon_tup, &mut state).await;
-                            }
-                        },
-                        None=>{}
-                    }
+                None => {
+                    warn!("Consensus receive error received");
+                    break;
                 }
             }
         }
     }
 
-    async fn beacon_output(&mut self,beacon_tup:(u32,u128),state:&mut State){
-        // Try to order the dag to commit. Start from the highest round for which we have at least
-        // 2f+1 certificates. This is because we need them to reveal the common coin.
-        let r = 2*beacon_tup.0 as u64;
-        self.beacon_map.insert((r/2) as u32,beacon_tup.1);
+    async fn commit_round(&mut self,r:Round,state:&mut State){
         // Get the certificate's digest of the leader of round r-2. If we already ordered this leader,
         // there is nothing to do.
         let leader_round = r - 2;
         if leader_round <= state.last_committed_round {
             return;
         }
-        let (leader_digest, leader) = match self.leader(leader_round,beacon_tup.1.clone(), &state.dag) {
+        let (leader_digest, leader) = match self.leader(leader_round, &state.dag) {
             Some(x) => x,
             None => return,
         };
@@ -261,7 +173,7 @@ impl Consensus {
         // Get an ordered list of past leaders that are linked to the current leader.
         info!("Leader {:?} has enough support", leader);
         let mut sequence = Vec::new();
-        for leader in self.order_leaders(leader,beacon_tup.1.clone(), &state).iter().rev() {
+        for leader in self.order_leaders(leader, &state).iter().rev() {
             // Starting from the oldest leader, flatten the sub-dag referenced by the leader.
             for x in self.order_dag(leader, &state) {
                 // Update and clean up internal state.
@@ -302,26 +214,20 @@ impl Consensus {
     }
     /// Returns the certificate (and the certificate's digest) originated by the leader of the
     /// specified round (if any).
-    fn leader<'a>(&self, round: Round,beacon:u128, dag: &'a Dag) -> Option<&'a (Digest0, Certificate)> {
-        // TODO: We should elect the leader of round r-2 using the common coin revealed at round r.
-        // At this stage, we are guaranteed to have 2f+1 certificates from round r (which is enough to
-        // compute the coin). We currently just use round-robin.
-        // #[cfg(test)]
-        // let coin = 0;
-        // #[cfg(not(test))]
-        // let coin = round;
-
+    fn leader<'a>(&self, round: Round, dag: &'a Dag) -> Option<&'a (Digest0, Certificate)> {
+        // Leaders are elected round-robin: there is no common coin in this build, so every
+        // authority derives the same leader from the round number alone.
         // Elect the leader.
         let mut keys: Vec<_> = self.committee.authorities.keys().cloned().collect();
         keys.sort();
-        let leader = keys[beacon as usize % self.committee.size()].clone();
+        let leader = keys[round as usize % self.committee.size()].clone();
 
         // Return its certificate and the certificate's digest.
         dag.get(&round).map(|x| x.get(&leader)).flatten()
     }
 
     /// Order the past leaders that we didn't already commit.
-    fn order_leaders(&self, leader: &Certificate,beacon:u128, state: &State) -> Vec<Certificate> {
+    fn order_leaders(&self, leader: &Certificate, state: &State) -> Vec<Certificate> {
         let mut to_commit = vec![leader.clone()];
         let mut leader = leader;
         for r in (state.last_committed_round + 2..=leader.round() - 2)
@@ -329,7 +235,7 @@ impl Consensus {
             .step_by(2)
         {
             // Get the certificate proposed by the previous leader.
-            let (_, prev_leader) = match self.leader(r,beacon, &state.dag) {
+            let (_, prev_leader) = match self.leader(r, &state.dag) {
                 Some(x) => x,
                 None => continue,
             };
